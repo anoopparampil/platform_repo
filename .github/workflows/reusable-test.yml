@@ -1,0 +1,17 @@
+name: Reusable Test Workflow
+
+on:
+  workflow_call:
+    inputs:
+      username:
+        description: 'A simple test input string'
+        required: false
+        type: string
+        default: 'World'
+
+jobs:
+  test-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print greeting
+        run: echo "Hello, ${{ inputs.username }}! This is a reusable workflow executing."
