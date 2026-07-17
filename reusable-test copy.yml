@@ -1,0 +1,290 @@
+name: Reusable Test Workflow
+
+on:
+  workflow_call:
+    inputs:
+      username:
+        description: "A simple test input string"
+        required: false
+        type: string
+        default: "World"
+      appconfig_path:
+        description: "Path to the appconfig.yml file"
+        required: false
+        type: string
+        default: "appconfig.yml"
+      appsettings_path:
+        description: "Path to the appsettings.json file"
+        required: false
+        type: string
+        default: "appsettings.json"
+      java_properties_path:
+        description: "Path to the application.properties file (Java)"
+        required: false
+        type: string
+        default: "application.properties"
+      env_file_path:
+        description: "Path to generate the .env file (Node/Python)"
+        required: false
+        type: string
+        default: ".env"
+      environment:
+        description: "GitHub environment (e.g. Dev or Prod)"
+        required: true
+        type: string
+
+jobs:
+  test-job:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+
+      - name: Print greeting
+        run: echo "Hello, ${{ inputs.username }}! Running in environment ${{ inputs.environment }}"
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Generate Kubernetes Secret Manifest
+        env:
+          APPCONFIG_PATH: ${{ inputs.appconfig_path }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+          VARS_JSON: ${{ toJSON(vars) }}
+        run: |
+          python - << 'EOF'
+          import yaml
+          import sys
+          import os
+          import json
+
+          filepath = os.environ.get('APPCONFIG_PATH', 'appconfig.yml')
+
+          if not os.path.exists(filepath):
+              print(f'Error: Config file not found at {filepath}')
+              sys.exit(1)
+
+          with open(filepath, 'r') as f:
+              config = yaml.safe_load(f)
+
+          try:
+              github_secrets = json.loads(os.environ.get('SECRETS_JSON', '{}'))
+              print(f"Debug: Loaded {len(github_secrets)} secrets. Keys available: {[k for k in github_secrets.keys() if k != 'github_token']}")
+          except Exception as e:
+              print(f"Error parsing secrets json: {e}")
+              github_secrets = {}
+
+          try:
+              github_vars = json.loads(os.environ.get('VARS_JSON', '{}'))
+              print(f"Debug: Loaded {len(github_vars)} variables. Keys available: {list(github_vars.keys())}")
+          except Exception as e:
+              print(f"Error parsing vars json: {e}")
+              github_vars = {}
+
+          groups = config.get('groups', {})
+          if not groups:
+              if 'kubernetes' in config:
+                  groups = {'default': config}
+              else:
+                  print("No 'groups' found in appconfig.yml")
+                  sys.exit(0)
+
+          for group_name, group_data in groups.items():
+              if not group_data:
+                  continue
+
+              secret_name = group_data.get('kubernetes', {}).get('secret_name', f'{group_name}-secret')
+              config_vars = group_data.get('github', {}).get('variables', []) or []
+              config_secrets = group_data.get('github', {}).get('secrets', []) or []
+
+              manifest = {
+                  'apiVersion': 'v1',
+                  'kind': 'Secret',
+                  'metadata': {
+                      'name': secret_name
+                  },
+                  'type': 'Opaque',
+                  'stringData': {}
+              }
+
+              for var in config_vars:
+                  manifest['stringData'][var] = github_vars.get(var, f'missing-var-{var}')
+
+              for sec in config_secrets:
+                  manifest['stringData'][sec] = github_secrets.get(sec, f'missing-secret-{sec}')
+
+              print('---')
+              print(f'# Generated Kubernetes Secret Manifest for group: {group_name}')
+              print(yaml.dump(manifest, default_flow_style=False, sort_keys=False))
+          EOF
+
+      - name: Replace placeholders in appsettings.json
+        env:
+          APPCONFIG_PATH: ${{ inputs.appconfig_path }}
+          APPSETTINGS_PATH: ${{ inputs.appsettings_path }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+          VARS_JSON: ${{ toJSON(vars) }}
+        run: |
+          python - << 'EOF'
+          import sys
+          import os
+          import json
+          import yaml
+
+          filepath = os.environ.get('APPSETTINGS_PATH', 'appsettings.json')
+          configpath = os.environ.get('APPCONFIG_PATH', 'appconfig.yml')
+
+          if not os.path.exists(filepath):
+              print(f"File {filepath} not found, skipping replacement.")
+              sys.exit(0)
+
+          if not os.path.exists(configpath):
+              print(f"File {configpath} not found, cannot determine which variables to replace.")
+              sys.exit(1)
+
+          with open(configpath, 'r') as f:
+              config = yaml.safe_load(f)
+
+          groups = config.get('groups', {})
+          if not groups:
+              if 'kubernetes' in config:
+                  groups = {'default': config}
+              else:
+                  print("No groups found in appconfig.")
+                  sys.exit(1)
+
+          # Take the first group available
+          first_group_name = list(groups.keys())[0]
+          group_data = groups[first_group_name]
+
+          config_vars = group_data.get('github', {}).get('variables', []) or []
+          config_secrets = group_data.get('github', {}).get('secrets', []) or []
+
+          try:
+              github_secrets = json.loads(os.environ.get('SECRETS_JSON', '{}'))
+          except:
+              github_secrets = {}
+
+          try:
+              github_vars = json.loads(os.environ.get('VARS_JSON', '{}'))
+          except:
+              github_vars = {}
+
+          with open(filepath, 'r') as f:
+              content = f.read()
+
+          for var in config_vars:
+              val = github_vars.get(var, f'missing-var-{var}')
+              content = content.replace(f"#{var}#", str(val))
+
+          for sec in config_secrets:
+              val = github_secrets.get(sec, f'missing-secret-{sec}')
+              content = content.replace(f"#{sec}#", str(val))
+
+          with open(filepath, 'w') as f:
+              f.write(content)
+
+          print(f"Successfully replaced placeholders in {filepath} for group '{first_group_name}'.")
+          print("--- Replaced Content ---")
+          print(content)
+          EOF
+
+      - name: Replace placeholders in application.properties
+        env:
+          APPCONFIG_PATH: ${{ inputs.appconfig_path }}
+          JAVA_PROPERTIES_PATH: ${{ inputs.java_properties_path }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+          VARS_JSON: ${{ toJSON(vars) }}
+        run: |
+          python - << 'EOF'
+          import sys, os, json, yaml
+          filepath = os.environ.get('JAVA_PROPERTIES_PATH', 'application.properties')
+          configpath = os.environ.get('APPCONFIG_PATH', 'appconfig.yml')
+
+          if not os.path.exists(filepath):
+              print(f"File {filepath} not found, skipping replacement.")
+              sys.exit(0)
+          if not os.path.exists(configpath):
+              sys.exit(1)
+
+          with open(configpath, 'r') as f:
+              config = yaml.safe_load(f)
+          groups = config.get('groups', {})
+          if not groups:
+              groups = {'default': config} if 'kubernetes' in config else {}
+          if not groups:
+              sys.exit(1)
+
+          first_group_name = list(groups.keys())[0]
+          group_data = groups[first_group_name]
+          config_vars = group_data.get('github', {}).get('variables', []) or []
+          config_secrets = group_data.get('github', {}).get('secrets', []) or []
+
+          try: github_secrets = json.loads(os.environ.get('SECRETS_JSON', '{}'))
+          except: github_secrets = {}
+          try: github_vars = json.loads(os.environ.get('VARS_JSON', '{}'))
+          except: github_vars = {}
+
+          with open(filepath, 'r') as f:
+              content = f.read()
+
+          for var in config_vars:
+              val = github_vars.get(var, f'missing-var-{var}')
+              content = content.replace(f"#{var}#", str(val))
+          for sec in config_secrets:
+              val = github_secrets.get(sec, f'missing-secret-{sec}')
+              content = content.replace(f"#{sec}#", str(val))
+
+          with open(filepath, 'w') as f:
+              f.write(content)
+
+          print(f"Successfully replaced placeholders in {filepath}.")
+          EOF
+
+      - name: Generate .env file
+        env:
+          APPCONFIG_PATH: ${{ inputs.appconfig_path }}
+          ENV_FILE_PATH: ${{ inputs.env_file_path }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+          VARS_JSON: ${{ toJSON(vars) }}
+        run: |
+          python - << 'EOF'
+          import sys, os, json, yaml
+          envpath = os.environ.get('ENV_FILE_PATH', '.env')
+          configpath = os.environ.get('APPCONFIG_PATH', 'appconfig.yml')
+
+          if not os.path.exists(configpath):
+              sys.exit(1)
+
+          with open(configpath, 'r') as f:
+              config = yaml.safe_load(f)
+          groups = config.get('groups', {})
+          if not groups:
+              groups = {'default': config} if 'kubernetes' in config else {}
+          if not groups:
+              sys.exit(1)
+
+          first_group_name = list(groups.keys())[0]
+          group_data = groups[first_group_name]
+          config_vars = group_data.get('github', {}).get('variables', []) or []
+          config_secrets = group_data.get('github', {}).get('secrets', []) or []
+
+          try: github_secrets = json.loads(os.environ.get('SECRETS_JSON', '{}'))
+          except: github_secrets = {}
+          try: github_vars = json.loads(os.environ.get('VARS_JSON', '{}'))
+          except: github_vars = {}
+
+          with open(envpath, 'w') as f:
+              for var in config_vars:
+                  val = github_vars.get(var, f'missing-var-{var}')
+                  f.write(f"{var}={val}\n")
+              for sec in config_secrets:
+                  val = github_secrets.get(sec, f'missing-secret-{sec}')
+                  f.write(f"{sec}={val}\n")
+
+          print(f"Successfully generated {envpath}.")
+          print(f"--- Generated Content of {envpath} ---")
+          with open(envpath, 'r') as f:
+              print(f.read())
+          EOF
