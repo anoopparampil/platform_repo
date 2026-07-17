@@ -59,12 +59,16 @@ jobs:
 
           try:
               github_secrets = json.loads(os.environ.get('SECRETS_JSON', '{}'))
-          except:
+              print(f"Debug: Loaded {len(github_secrets)} secrets. Keys available: {[k for k in github_secrets.keys() if k != 'github_token']}")
+          except Exception as e:
+              print(f"Error parsing secrets json: {e}")
               github_secrets = {}
 
           try:
               github_vars = json.loads(os.environ.get('VARS_JSON', '{}'))
-          except:
+              print(f"Debug: Loaded {len(github_vars)} variables. Keys available: {list(github_vars.keys())}")
+          except Exception as e:
+              print(f"Error parsing vars json: {e}")
               github_vars = {}
 
           manifest = {
