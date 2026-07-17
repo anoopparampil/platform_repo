@@ -38,7 +38,7 @@ jobs:
           SECRETS_JSON: ${{ toJSON(secrets) }}
           VARS_JSON: ${{ toJSON(vars) }}
         run: |
-          python -c "
+          python - << 'EOF'
           import yaml
           import sys
           import os
@@ -90,4 +90,4 @@ jobs:
           print('---')
           print('# Generated Kubernetes Secret Manifest')
           print(yaml.dump(manifest, default_flow_style=False, sort_keys=False))
-          "
+          EOF
