@@ -4,14 +4,86 @@ on:
   workflow_call:
     inputs:
       username:
-        description: 'A simple test input string'
+        description: "A simple test input string"
         required: false
         type: string
-        default: 'World'
+        default: "World"
+      appconfig_path:
+        description: "Path to the appconfig.yml file"
+        required: false
+        type: string
+        default: "appconfig.yml"
+      environment:
+        description: "GitHub environment (e.g. Dev or Prod)"
+        required: true
+        type: string
 
 jobs:
   test-job:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+
       - name: Print greeting
-        run: echo "Hello, ${{ inputs.username }}! This is a reusable workflow executing."
+        run: echo "Hello, ${{ inputs.username }}! Running in environment ${{ inputs.environment }}"
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Generate Kubernetes Secret Manifest
+        env:
+          APPCONFIG_PATH: ${{ inputs.appconfig_path }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+          VARS_JSON: ${{ toJSON(vars) }}
+        run: |
+          python -c "
+          import yaml
+          import sys
+          import os
+          import json
+
+          filepath = os.environ.get('APPCONFIG_PATH', 'appconfig.yml')
+          
+          if not os.path.exists(filepath):
+              print(f'Error: Config file not found at {filepath}')
+              sys.exit(1)
+
+          with open(filepath, 'r') as f:
+              config = yaml.safe_load(f)
+
+          secret_name = config.get('kubernetes', {}).get('secret_name', 'default-secret')
+          config_vars = config.get('github', {}).get('variables', []) or []
+          config_secrets = config.get('github', {}).get('secrets', []) or []
+
+          try:
+              github_secrets = json.loads(os.environ.get('SECRETS_JSON', '{}'))
+          except:
+              github_secrets = {}
+
+          try:
+              github_vars = json.loads(os.environ.get('VARS_JSON', '{}'))
+          except:
+              github_vars = {}
+
+          manifest = {
+              'apiVersion': 'v1',
+              'kind': 'Secret',
+              'metadata': {
+                  'name': secret_name
+              },
+              'type': 'Opaque',
+              'stringData': {}
+          }
+
+          for var in config_vars:
+              manifest['stringData'][var] = github_vars.get(var, f'missing-var-{var}')
+
+          for sec in config_secrets:
+              manifest['stringData'][sec] = github_secrets.get(sec, f'missing-secret-{sec}')
+
+          print('---')
+          print('# Generated Kubernetes Secret Manifest')
+          print(yaml.dump(manifest, default_flow_style=False, sort_keys=False))
+          "
