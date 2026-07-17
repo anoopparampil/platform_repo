@@ -53,10 +53,6 @@ jobs:
           with open(filepath, 'r') as f:
               config = yaml.safe_load(f)
 
-          secret_name = config.get('kubernetes', {}).get('secret_name', 'default-secret')
-          config_vars = config.get('github', {}).get('variables', []) or []
-          config_secrets = config.get('github', {}).get('secrets', []) or []
-
           try:
               github_secrets = json.loads(os.environ.get('SECRETS_JSON', '{}'))
               print(f"Debug: Loaded {len(github_secrets)} secrets. Keys available: {[k for k in github_secrets.keys() if k != 'github_token']}")
@@ -71,23 +67,39 @@ jobs:
               print(f"Error parsing vars json: {e}")
               github_vars = {}
 
-          manifest = {
-              'apiVersion': 'v1',
-              'kind': 'Secret',
-              'metadata': {
-                  'name': secret_name
-              },
-              'type': 'Opaque',
-              'stringData': {}
-          }
+          groups = config.get('groups', {})
+          if not groups:
+              if 'kubernetes' in config:
+                  groups = {'default': config}
+              else:
+                  print("No 'groups' found in appconfig.yml")
+                  sys.exit(0)
 
-          for var in config_vars:
-              manifest['stringData'][var] = github_vars.get(var, f'missing-var-{var}')
+          for group_name, group_data in groups.items():
+              if not group_data:
+                  continue
 
-          for sec in config_secrets:
-              manifest['stringData'][sec] = github_secrets.get(sec, f'missing-secret-{sec}')
+              secret_name = group_data.get('kubernetes', {}).get('secret_name', f'{group_name}-secret')
+              config_vars = group_data.get('github', {}).get('variables', []) or []
+              config_secrets = group_data.get('github', {}).get('secrets', []) or []
 
-          print('---')
-          print('# Generated Kubernetes Secret Manifest')
-          print(yaml.dump(manifest, default_flow_style=False, sort_keys=False))
+              manifest = {
+                  'apiVersion': 'v1',
+                  'kind': 'Secret',
+                  'metadata': {
+                      'name': secret_name
+                  },
+                  'type': 'Opaque',
+                  'stringData': {}
+              }
+
+              for var in config_vars:
+                  manifest['stringData'][var] = github_vars.get(var, f'missing-var-{var}')
+
+              for sec in config_secrets:
+                  manifest['stringData'][sec] = github_secrets.get(sec, f'missing-secret-{sec}')
+
+              print('---')
+              print(f'# Generated Kubernetes Secret Manifest for group: {group_name}')
+              print(yaml.dump(manifest, default_flow_style=False, sort_keys=False))
           EOF
