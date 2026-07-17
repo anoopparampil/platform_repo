@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: "appconfig.yml"
+      appsettings_path:
+        description: "Path to the appsettings.json file"
+        required: false
+        type: string
+        default: "appsettings.json"
       environment:
         description: "GitHub environment (e.g. Dev or Prod)"
         required: true
@@ -102,4 +107,75 @@ jobs:
               print('---')
               print(f'# Generated Kubernetes Secret Manifest for group: {group_name}')
               print(yaml.dump(manifest, default_flow_style=False, sort_keys=False))
+          EOF
+
+      - name: Replace placeholders in appsettings.json
+        env:
+          APPCONFIG_PATH: ${{ inputs.appconfig_path }}
+          APPSETTINGS_PATH: ${{ inputs.appsettings_path }}
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+          VARS_JSON: ${{ toJSON(vars) }}
+        run: |
+          python - << 'EOF'
+          import sys
+          import os
+          import json
+          import yaml
+
+          filepath = os.environ.get('APPSETTINGS_PATH', 'appsettings.json')
+          configpath = os.environ.get('APPCONFIG_PATH', 'appconfig.yml')
+
+          if not os.path.exists(filepath):
+              print(f"File {filepath} not found, skipping replacement.")
+              sys.exit(0)
+
+          if not os.path.exists(configpath):
+              print(f"File {configpath} not found, cannot determine which variables to replace.")
+              sys.exit(1)
+
+          with open(configpath, 'r') as f:
+              config = yaml.safe_load(f)
+
+          groups = config.get('groups', {})
+          if not groups:
+              if 'kubernetes' in config:
+                  groups = {'default': config}
+              else:
+                  print("No groups found in appconfig.")
+                  sys.exit(1)
+
+          # Take the first group available
+          first_group_name = list(groups.keys())[0]
+          group_data = groups[first_group_name]
+
+          config_vars = group_data.get('github', {}).get('variables', []) or []
+          config_secrets = group_data.get('github', {}).get('secrets', []) or []
+
+          try:
+              github_secrets = json.loads(os.environ.get('SECRETS_JSON', '{}'))
+          except:
+              github_secrets = {}
+
+          try:
+              github_vars = json.loads(os.environ.get('VARS_JSON', '{}'))
+          except:
+              github_vars = {}
+
+          with open(filepath, 'r') as f:
+              content = f.read()
+
+          for var in config_vars:
+              val = github_vars.get(var, f'missing-var-{var}')
+              content = content.replace(f"#{var}#", str(val))
+
+          for sec in config_secrets:
+              val = github_secrets.get(sec, f'missing-secret-{sec}')
+              content = content.replace(f"#{sec}#", str(val))
+
+          with open(filepath, 'w') as f:
+              f.write(content)
+
+          print(f"Successfully replaced placeholders in {filepath} for group '{first_group_name}'.")
+          print("--- Replaced Content ---")
+          print(content)
           EOF
